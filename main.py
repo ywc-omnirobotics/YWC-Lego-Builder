@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Lego Block 產生器",
     "author": "Gemini",
-    "version": (1, 4),
+    "version": (1, 5),
     "blender": (2, 1, 1),
     "location": "View3D > Add > Mesh > Lego Block",
     "description": "產生以 8mm 為基準並依單位細分的 LEGO 方塊",
@@ -185,7 +185,9 @@ def performBooleanCut(operator, context, stlName, scaleY=None):
     cutterObj.location = worldCenter
     cutterObj.rotation_euler = rotationQuat.to_euler()
     
-    cutterObj.location -= worldNormal * 4.0
+    # 偏移量需隨縮放倍率等比增加，確保 cutter 前端始終對齊選取面
+    depthOffset = (scaleY if scaleY is not None else 1.0) * 4.0
+    cutterObj.location -= worldNormal * depthOffset
     
     context.view_layer.update()
     context.view_layer.objects.active = targetObj
