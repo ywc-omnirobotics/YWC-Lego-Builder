@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Lego Block 產生器",
     "author": "Gemini",
-    "version": (1, 3),
+    "version": (1, 4),
     "blender": (2, 1, 1),
     "location": "View3D > Add > Mesh > Lego Block",
     "description": "產生以 8mm 為基準並依單位細分的 LEGO 方塊",
@@ -84,7 +84,7 @@ class MeshOtAddLegoBlock(bpy.types.Operator):
         newObj.name = "Lego_Block"
         return {'FINISHED'}
 
-def performBooleanCut(operator, context, stlName):
+def performBooleanCut(operator, context, stlName, scaleY=None):
     stlImporterModule = "io_mesh_stl"
     isEnabled, _ = addon_utils.check(stlImporterModule)
     if not isEnabled:
@@ -173,7 +173,11 @@ def performBooleanCut(operator, context, stlName):
     # 2. 微調縮放打破共面 (Coplanar) 問題
     # 如果 Cutter 剛好 8mm 長，切 8mm 的積木會導致表面完美重疊，這會讓 EXACT 布林直接崩潰 (破圖或失敗)。
     # 我們沿著深度軸 (Y軸) 稍微放大 1% (8.08mm)，讓兩端稍微突出去，保證完美切穿！
-    cutterObj.scale.y = 1.01
+    if scaleY is not None:
+        # 轉軸模式：先按用戶指定的格數縮放，再多 1% 避免共面
+        cutterObj.scale.y = scaleY * 1.01
+    else:
+        cutterObj.scale.y = 1.01
     
     fromVector = mathutils.Vector((0, -1, 0))
     rotationQuat = fromVector.rotation_difference(worldNormal)
@@ -234,10 +238,35 @@ class MeshOtInsertAxle(bpy.types.Operator):
     def execute(self, context):
         return performBooleanCut(self, context, "AXLE.stl")
 
+class MeshOtInsertShaft(bpy.types.Operator):
+    """在選取的面上插入 轉軸 孔（可指定格數拉長）"""
+    bl_idname = "mesh.insert_shaft"
+    bl_label = "插入 轉軸 孔"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    units: bpy.props.IntProperty(
+        name="格數", description="轉軸長度（幾格，1格 = 8mm）", default=1, min=1, max=100
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return (context.mode == 'EDIT_MESH' and
+                context.active_object is not None and
+                context.active_object.type == 'MESH')
+
+    def invoke(self, context, event):
+        # 彈出對話框讓用戶輸入格數
+        return context.window_manager.invoke_props_dialog(self, title="轉軸設定")
+
+    def execute(self, context):
+        # scaleY = 用戶指定的格數（shaft.stl 預設為 1 格 = 8mm）
+        return performBooleanCut(self, context, "SHAFT.stl", scaleY=float(self.units))
+
 def editMenuFunc(self, context):
     self.layout.separator()
     self.layout.operator(MeshOtInsertPin.bl_idname, icon='MESH_CYLINDER')
     self.layout.operator(MeshOtInsertAxle.bl_idname)
+    self.layout.operator(MeshOtInsertShaft.bl_idname, icon='CON_ROTLIMIT')
 
 def menuFunc(self, context):
     self.layout.operator(MeshOtAddLegoBlock.bl_idname, icon='CUBE')
@@ -246,6 +275,7 @@ classes = (
     MeshOtAddLegoBlock,
     MeshOtInsertPin,
     MeshOtInsertAxle,
+    MeshOtInsertShaft,
 )
 
 def register():
