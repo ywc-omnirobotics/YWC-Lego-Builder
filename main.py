@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Lego Block 產生器",
-    "author": "Gemini",
-    "version": (1, 5),
-    "blender": (2, 1, 1),
+    "author": "YWC Robotics Team (Omni Robotics) & Gemini & Claude",
+    "version": (1, 8),
+    "blender": (4, 6, 0),
     "location": "View3D > Add > Mesh > Lego Block",
-    "description": "產生以 8mm 為基準並依單位細分的 LEGO 方塊",
+    "description": "產生以 8mm 為基準並依單位細分的 LEGO 方塊，並支援在編輯模式插入 PIN / AXLE / 轉軸 孔。",
     "category": "Add Mesh",
 }
 
@@ -13,6 +13,26 @@ import bmesh
 import mathutils
 import os
 import addon_utils
+
+def cleanupMesh(obj):
+    """收尾用：消除鬆散點/邊、融合共點、重新計算法線。需在 OBJECT 模式呼叫。"""
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    # 融合共點（極小閾值，避免破壞網格拓樸）
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0001)
+    # 消除鬆散點（沒有連接邊的孤立頂點）
+    looseVerts = [v for v in bm.verts if not v.link_edges]
+    if looseVerts:
+        bmesh.ops.delete(bm, geom=looseVerts, context='VERTS')
+    # 消除鬆散邊（沒有連接面的浮動邊）
+    looseEdges = [e for e in bm.edges if not e.link_faces]
+    if looseEdges:
+        bmesh.ops.delete(bm, geom=looseEdges, context='EDGES')
+    # 重新計算法線（朝外）
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
 
 class MeshOtAddLegoBlock(bpy.types.Operator):
     """新增一個 Lego Block"""
@@ -77,7 +97,9 @@ class MeshOtAddLegoBlock(bpy.types.Operator):
         bmesh.update_edit_mesh(newObj.data)
         bpy.ops.object.mode_set(mode='OBJECT')
         context.view_layer.update()
-        
+
+        cleanupMesh(newObj)
+
         bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='BOUNDS')
         newObj.location.z -= (newObj.location.z - newObj.bound_box[0][2] * newObj.scale.z)
         newObj.location += context.scene.cursor.location
@@ -91,16 +113,15 @@ def performBooleanCut(operator, context, stlName, scaleY=None):
         addon_utils.enable(stlImporterModule, default_set=True, persistent=False)
         
     try:
-        baseDir = os.path.dirname(__file__)
+        baseDir = os.path.dirname(os.path.abspath(__file__))
     except NameError:
-        baseDir = r"e:\3D Print\YWC Lego Builder"
-        
+        # Blender Text Editor 直接執行時沒有 __file__，退回到 blend 檔所在目錄
+        baseDir = bpy.path.abspath("//") or os.getcwd()
+
     stlPath = os.path.join(baseDir, stlName)
     if not os.path.exists(stlPath):
-        stlPath = os.path.join(r"e:\3D Print\YWC Lego Builder", stlName)
-        if not os.path.exists(stlPath):
-            operator.report({'ERROR'}, f"找不到 {stlName} 檔案: {stlPath}")
-            return {'CANCELLED'}
+        operator.report({'ERROR'}, f"找不到 {stlName} 檔案: {stlPath}")
+        return {'CANCELLED'}
             
     targetObj = context.active_object
     if not targetObj:
@@ -206,8 +227,12 @@ def performBooleanCut(operator, context, stlName, scaleY=None):
         return {'CANCELLED'}
         
     bpy.data.objects.remove(cutterObj, do_unlink=True)
+
+    # 布林後在 OBJECT 模式做一次幾何收尾：融合共點、消鬆散、重算法線
+    cleanupMesh(targetObj)
+
     bpy.ops.object.mode_set(mode='EDIT')
-    
+
     return {'FINISHED'}
 
 class MeshOtInsertPin(bpy.types.Operator):
@@ -226,19 +251,29 @@ class MeshOtInsertPin(bpy.types.Operator):
         return performBooleanCut(self, context, "PIN.stl")
 
 class MeshOtInsertAxle(bpy.types.Operator):
-    """在選取的面上插入 AXLE 十字孔"""
+    """在選取的面上插入 AXLE 十字孔（可指定格數拉長）"""
     bl_idname = "mesh.insert_axle"
     bl_label = "插入 AXLE 孔"
     bl_options = {'REGISTER', 'UNDO'}
-    
+
+    units: bpy.props.FloatProperty(
+        name="格數", description="AXLE 長度（幾格，1格 = 8mm，可輸入小數）",
+        default=1.0, min=0.1, max=100.0, step=10, precision=2
+    )
+
     @classmethod
     def poll(cls, context):
         return (context.mode == 'EDIT_MESH' and
                 context.active_object is not None and
                 context.active_object.type == 'MESH')
 
+    def invoke(self, context, event):
+        # 彈出對話框讓用戶輸入格數
+        return context.window_manager.invoke_props_dialog(self, title="AXLE 設定")
+
     def execute(self, context):
-        return performBooleanCut(self, context, "AXLE.stl")
+        # scaleY = 用戶指定的格數（AXLE.stl 預設為 1 格 = 8mm）
+        return performBooleanCut(self, context, "AXLE.stl", scaleY=float(self.units))
 
 class MeshOtInsertShaft(bpy.types.Operator):
     """在選取的面上插入 轉軸 孔（可指定格數拉長）"""
@@ -246,8 +281,9 @@ class MeshOtInsertShaft(bpy.types.Operator):
     bl_label = "插入 轉軸 孔"
     bl_options = {'REGISTER', 'UNDO'}
 
-    units: bpy.props.IntProperty(
-        name="格數", description="轉軸長度（幾格，1格 = 8mm）", default=1, min=1, max=100
+    units: bpy.props.FloatProperty(
+        name="格數", description="轉軸長度（幾格，1格 = 8mm，可輸入小數）",
+        default=1.0, min=0.1, max=100.0, step=10, precision=2
     )
 
     @classmethod
@@ -267,7 +303,7 @@ class MeshOtInsertShaft(bpy.types.Operator):
 def editMenuFunc(self, context):
     self.layout.separator()
     self.layout.operator(MeshOtInsertPin.bl_idname, icon='MESH_CYLINDER')
-    self.layout.operator(MeshOtInsertAxle.bl_idname)
+    self.layout.operator(MeshOtInsertAxle.bl_idname, icon='EMPTY_AXIS')
     self.layout.operator(MeshOtInsertShaft.bl_idname, icon='CON_ROTLIMIT')
 
 def menuFunc(self, context):
